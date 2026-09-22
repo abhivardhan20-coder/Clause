@@ -154,8 +154,8 @@ export function DocumentDialog({
               onCheckedChange={(v) => setConsent(v === true)}
             />
             <span>
-              Send this document to OpenAI for analysis. Remove personal or
-              confidential information you do not want processed.
+              Send this document to Google Gemini for analysis. Remove personal
+              or confidential information you do not want processed.
             </span>
           </label>
         ) : (

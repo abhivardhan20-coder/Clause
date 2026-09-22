@@ -1,9 +1,14 @@
 import { env } from "cloudflare:workers";
 import { z } from "zod";
 import { MAX_DOCUMENT_CHARS, splitSources } from "@/lib/documents";
+import {
+  DEFAULT_GEMINI_MODEL,
+  GeminiError,
+  generateGeminiJSON,
+} from "@/lib/gemini";
 
 const runtime = () =>
-  env as unknown as { OPENAI_API_KEY?: string; OPENAI_MODEL?: string };
+  env as unknown as { GEMINI_API_KEY?: string; GEMINI_MODEL?: string };
 const headers = {
   "Cache-Control": "no-store",
   "X-Content-Type-Options": "nosniff",
@@ -104,7 +109,10 @@ function json(body: unknown, status = 200) {
 }
 
 export async function GET() {
-  return json({ available: Boolean(runtime().OPENAI_API_KEY) });
+  return json({
+    available: Boolean(runtime().GEMINI_API_KEY),
+    provider: "Google Gemini",
+  });
 }
 
 async function readBoundedJSON(request: Request): Promise<unknown> {
@@ -162,7 +170,7 @@ export async function POST(request: Request) {
       },
       400,
     );
-  const key = runtime().OPENAI_API_KEY;
+  const key = runtime().GEMINI_API_KEY;
   if (!key)
     return json(
       {
@@ -196,77 +204,22 @@ ${input.action === "review" ? "Summarize the document. Select up to 12 relevant 
     ...(input.action === "question" ? { question: input.question } : {}),
   });
   try {
-    const response = await fetch("https://api.openai.com/v1/responses", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${key}`,
-      },
+    const output = await generateGeminiJSON({
+      apiKey: key,
+      model: runtime().GEMINI_MODEL || DEFAULT_GEMINI_MODEL,
+      instructions,
+      input: payload,
+      schema: input.action === "review" ? reviewFormat : answerFormat,
       signal: AbortSignal.any([request.signal, AbortSignal.timeout(60_000)]),
-      body: JSON.stringify({
-        model: runtime().OPENAI_MODEL || "gpt-4.1-mini",
-        store: false,
-        instructions,
-        input: payload,
-        max_output_tokens: 7000,
-        text: {
-          format: {
-            type: "json_schema",
-            name:
-              input.action === "review" ? "document_review" : "document_answer",
-            strict: true,
-            schema: input.action === "review" ? reviewFormat : answerFormat,
-          },
-        },
-      }),
     });
-    if (!response.ok)
-      return json(
-        {
-          error:
-            response.status === 429
-              ? "The AI service is busy. Please try again shortly."
-              : "The AI service could not complete the request. Check the server API configuration or try again.",
-        },
-        502,
-      );
-    const result = (await response.json()) as {
-      status?: string;
-      output?: Array<{
-        type: string;
-        content?: Array<{ type: string; text?: string }>;
-      }>;
-    };
-    if (result.status !== "completed")
-      return json(
-        {
-          error:
-            "The AI response was incomplete. Try a shorter document or question.",
-        },
-        502,
-      );
-    const output = result.output
-      ?.filter((x) => x.type === "message")
-      .flatMap((x) => x.content || [])
-      .filter((x) => x.type === "output_text")
-      .map((x) => x.text || "")
-      .join("");
-    if (!output)
-      return json(
-        {
-          error:
-            "The AI service did not return a document explanation. Try a different question.",
-        },
-        502,
-      );
     const ids = new Set(sources.map((s) => s.id));
     if (input.action === "question") {
-      const answer = answerSchema.parse(JSON.parse(output));
+      const answer = answerSchema.parse(output);
       if (answer.ids.some((id) => !ids.has(id)))
         throw new Error("Invalid source reference");
       return json({ ...answer, ids: [...new Set(answer.ids)] });
     }
-    const review = reviewSchema.parse(JSON.parse(output));
+    const review = reviewSchema.parse(output);
     if (
       review.clauses.some((c) => !ids.has(c.sourceId)) ||
       new Set(review.clauses.map((c) => c.sourceId)).size !==
@@ -293,6 +246,8 @@ ${input.action === "review" ? "Summarize the document. Select up to 12 relevant 
       mode: "ai",
     });
   } catch (error) {
+    if (error instanceof GeminiError)
+      return json({ error: error.message }, error.status);
     return json(
       {
         error:

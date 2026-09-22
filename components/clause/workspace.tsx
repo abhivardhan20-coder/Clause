@@ -872,8 +872,8 @@ export default function Workspace() {
                 <p>
                   Documents and notes are held in browser memory and clear on
                   refresh. Text comparison runs locally. Live analysis, when
-                  enabled, sends document text to OpenAI. Export anything you
-                  want to keep.
+                  enabled, sends document text to Google Gemini. Export anything
+                  you want to keep.
                 </p>
               </div>
             </section>
