@@ -36,6 +36,7 @@ export function DocumentDialog({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const upload = useRef<HTMLInputElement>(null);
+  const running = useRef(false);
   const controller = useRef<AbortController | null>(null);
   useEffect(() => () => controller.current?.abort(), []);
   function close(value: boolean) {
@@ -43,6 +44,7 @@ export function DocumentDialog({
     onOpenChange(value);
   }
   async function load(analyze: boolean) {
+    if (running.current) return;
     setError("");
     if (!text.trim() || text.length > MAX_DOCUMENT_CHARS) {
       setError("Add between 1 and 60,000 characters of document text.");
@@ -52,6 +54,7 @@ export function DocumentDialog({
       setError("Please confirm that the text may be sent for AI analysis.");
       return;
     }
+    running.current = true;
     setBusy(true);
     const abort = new AbortController();
     controller.current = abort;
@@ -63,6 +66,7 @@ export function DocumentDialog({
             abort.signal,
           )
         : createUnreviewed(name, text);
+      if (abort.signal.aborted) return;
       onLoad({
         id: crypto.randomUUID(),
         text,
@@ -80,6 +84,7 @@ export function DocumentDialog({
           e instanceof Error ? e.message : "Could not open this document.",
         );
     } finally {
+      running.current = false;
       setBusy(false);
     }
   }
@@ -136,7 +141,10 @@ export function DocumentDialog({
           Document text
           <textarea
             id="document-text"
+            aria-label="Document text"
             value={text}
+            aria-invalid={Boolean(error)}
+            aria-describedby={error ? "document-error" : undefined}
             maxLength={MAX_DOCUMENT_CHARS}
             onChange={(e) => setText(e.target.value)}
             placeholder="Paste your agreement here…"
@@ -150,6 +158,7 @@ export function DocumentDialog({
         {aiAvailable ? (
           <label className="consent-row">
             <Checkbox
+              disabled={busy}
               checked={consent}
               onCheckedChange={(v) => setConsent(v === true)}
             />
@@ -168,7 +177,7 @@ export function DocumentDialog({
           </div>
         )}
         {error && (
-          <p className="form-error" role="alert">
+          <p className="form-error" role="alert" id="document-error">
             {error}
           </p>
         )}

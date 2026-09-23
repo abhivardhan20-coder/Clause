@@ -64,7 +64,7 @@ test("rejects truncated, blocked, and invalid JSON responses", async () => {
         ],
       }),
     ),
-    SyntaxError,
+    GeminiError,
   );
 });
 

@@ -1,3 +1,4 @@
+import { readBoundedJSON } from "./server/http.ts";
 /** Server-side Gemini adapter. Never import credentials into client components. */
 export const DEFAULT_GEMINI_MODEL = "gemini-2.5-flash";
 
@@ -10,13 +11,14 @@ export class GeminiError extends Error {
   }
 }
 
-type GenerateOptions = {
+export type GenerateOptions = {
   apiKey: string;
   model?: string;
   instructions: string;
   input: string;
   schema: object;
   signal: AbortSignal;
+  maxOutputTokens?: number;
 };
 
 export async function generateGeminiJSON(
@@ -43,7 +45,7 @@ export async function generateGeminiJSON(
           responseMimeType: "application/json",
           responseJsonSchema: options.schema,
           temperature: 0.2,
-          maxOutputTokens: 7000,
+          maxOutputTokens: options.maxOutputTokens ?? 7000,
           ...(model.startsWith("gemini-2.5-")
             ? { thinkingConfig: { thinkingBudget: 1024 } }
             : {}),
@@ -72,7 +74,16 @@ export async function generateGeminiJSON(
     );
   }
 
-  const result = (await response.json()) as {
+  let raw: unknown;
+  try {
+    raw = await readBoundedJSON(response, 15_000, 100_000);
+  } catch {
+    throw new GeminiError(
+      "Gemini returned an invalid response. Please try again.",
+      502,
+    );
+  }
+  const result = raw as {
     promptFeedback?: { blockReason?: string };
     candidates?: Array<{
       finishReason?: string;
@@ -104,5 +115,12 @@ export async function generateGeminiJSON(
       "Gemini did not return a document explanation. Please try again.",
       502,
     );
-  return JSON.parse(output);
+  try {
+    return JSON.parse(output);
+  } catch {
+    throw new GeminiError(
+      "Gemini returned invalid JSON. Please try again.",
+      502,
+    );
+  }
 }

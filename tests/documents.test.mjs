@@ -112,3 +112,56 @@ test("brief includes provenance, source text, notes, and checkbox state", () => 
   assert(brief.includes(sampleText));
   assert(brief.includes("Clarify the notice period."));
 });
+
+test("randomized diffs reconstruct both inputs and handle normalized line endings", () => {
+  let seed = 42;
+  const next = () => {
+    seed = (1664525 * seed + 1013904223) >>> 0;
+    return seed;
+  };
+  for (let run = 0; run < 200; run++) {
+    const a = Array.from({ length: (next() % 20) + 1 }, () =>
+      String(next() % 5),
+    ).join("\n");
+    const b = Array.from({ length: (next() % 20) + 1 }, () =>
+      String(next() % 5),
+    ).join("\n");
+    const diff = compareText(a, b);
+    assert.equal(
+      diff
+        .filter((d) => d.kind !== "added")
+        .map((d) => d.text)
+        .join("\n"),
+      a,
+    );
+    assert.equal(
+      diff
+        .filter((d) => d.kind !== "removed")
+        .map((d) => d.text)
+        .join("\n"),
+      b,
+    );
+  }
+  assert.deepEqual(
+    compareText("a\r\nb", "a\nb").map((d) => d.kind),
+    ["same", "same"],
+  );
+});
+test("splitting avoids broken Unicode characters and enforces character limits", () => {
+  const source = "a".repeat(1799) + "😀" + "b".repeat(1900);
+  const parts = splitSources(source);
+  assert.equal(parts.map((s) => s.text).join(""), source);
+  assert(parts.every((s) => !/[\uD800-\uDBFF]$/.test(s.text)));
+  assert.throws(() => splitSources("a".repeat(60001)), /60,000/);
+  assert.throws(() => compareText("a".repeat(60001), "a"), /60,000/);
+});
+test("UTF-8 decoding rejects invalid bytes and accepts a genuine replacement character", async () => {
+  await assert.rejects(
+    readTextFile(new File([new Uint8Array([255, 254, 0])], "invalid.txt")),
+    /UTF-8/,
+  );
+  assert.equal(
+    await readTextFile(new File(["A replacement symbol: \ufffd"], "valid.txt")),
+    "A replacement symbol: \ufffd",
+  );
+});

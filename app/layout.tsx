@@ -18,7 +18,12 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="en">
-      <body className="antialiased">{children}</body>
+      <body className="antialiased">
+        <a href="#main-content" className="skip-link">
+          Skip to document workspace
+        </a>
+        {children}
+      </body>
     </html>
   );
 }

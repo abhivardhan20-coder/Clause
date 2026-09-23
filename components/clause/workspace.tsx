@@ -1,6 +1,7 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { lazy, Suspense, useEffect, useMemo, useRef, useState } from "react";
+import { MAX_SESSION_DOCUMENTS } from "@/lib/limits";
 import { flushSync } from "react-dom";
 import {
   ArrowDownToLine,
@@ -41,9 +42,15 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { Progress } from "@/components/ui/progress";
 import { Toaster } from "@/components/ui/sonner";
 import { Assistant } from "./assistant";
-import { Compare } from "./compare";
-import { DocumentDialog } from "./document-dialog";
-import { ExportDialog } from "./export-dialog";
+const Compare = lazy(() =>
+  import("./compare").then((m) => ({ default: m.Compare })),
+);
+const DocumentDialog = lazy(() =>
+  import("./document-dialog").then((m) => ({ default: m.DocumentDialog })),
+);
+const ExportDialog = lazy(() =>
+  import("./export-dialog").then((m) => ({ default: m.ExportDialog })),
+);
 import { sample, sampleText, type Review } from "@/lib/sample";
 import { type WorkspaceDocument } from "@/lib/documents";
 
@@ -305,7 +312,12 @@ function Explorer({
   const focus = useRef<HTMLDivElement>(null);
   useEffect(() => {
     if (selected !== null)
-      focus.current?.scrollIntoView({ behavior: "smooth", block: "nearest" });
+      focus.current?.scrollIntoView({
+        behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches
+          ? "instant"
+          : "smooth",
+        block: "nearest",
+      });
   }, [selected]);
   return (
     <section>
@@ -348,6 +360,12 @@ function Explorer({
             <div className="clause-detail" id={`source-${c.id}`}>
               <div className="detail-label">ORIGINAL WORDING</div>
               <blockquote>{c.text}</blockquote>
+              {!c.explanation && (
+                <p className="coverage-note">
+                  No explanation was generated for this excerpt. Read it in the
+                  context of the complete document.
+                </p>
+              )}
               {c.explanation && (
                 <>
                   <div className="detail-label teal-text">
@@ -473,7 +491,13 @@ export default function Workspace() {
   const doc = docs.find((d) => d.id === active) || docs[0];
   const { review } = doc;
   const hasReview = review.mode !== "unreviewed";
-  const attention = review.clauses.filter((c) => c.attention !== "info").length;
+  const { attention, explained } = useMemo(
+    () => ({
+      attention: review.clauses.filter((c) => c.attention !== "info").length,
+      explained: review.clauses.filter((c) => c.explanation).length,
+    }),
+    [review],
+  );
   function updateDoc(patch: Partial<WorkspaceDocument>) {
     setDocs((current) =>
       current.map((d) => (d.id === active ? { ...d, ...patch } : d)),
@@ -505,7 +529,9 @@ export default function Workspace() {
 
   // The same operations power both the visible controls and optional browser-agent tools.
   const current = useRef({ doc, view, updateDoc });
-  current.current = { doc, view, updateDoc };
+  useEffect(() => {
+    current.current = { doc, view, updateDoc };
+  });
   useEffect(() => {
     const context = (document as Document & { modelContext?: ModelContext })
       .modelContext;
@@ -639,7 +665,7 @@ export default function Workspace() {
             Session-only documents
           </span>
         </header>
-        <main className="main-content" id="main-content">
+        <main className="main-content" id="main-content" tabIndex={-1}>
           <div className="page-heading">
             <div>
               <div className="eyebrow">LESS LEGAL JARGON. MORE CLARITY.</div>
@@ -651,7 +677,13 @@ export default function Workspace() {
             </div>
             <button
               className="primary-button"
-              onClick={() => setUploadOpen(true)}
+              onClick={() => {
+                if (docs.length >= MAX_SESSION_DOCUMENTS)
+                  toast.error(
+                    "Keep up to 10 documents per session. Remove one to make room.",
+                  );
+                else setUploadOpen(true);
+              }}
             >
               <Plus size={18} />
               New document
@@ -702,19 +734,35 @@ export default function Workspace() {
               <ArrowDownToLine size={16} />
               Export brief
             </button>
+            {active !== "sample" && (
+              <button
+                className="text-button"
+                onClick={() => {
+                  setDocs((current) =>
+                    current.filter((item) => item.id !== active),
+                  );
+                  selectDocument("sample");
+                  toast.success("Document removed from this session.");
+                }}
+              >
+                Remove document
+              </button>
+            )}
           </section>
+          {review.mode === "ai" && (
+            <p className="coverage-note" role="status">
+              {explained} of {review.clauses.length} source excerpts explained.
+              {explained < review.clauses.length &&
+                " The remaining excerpts have not been assessed. Read the complete original."}
+            </p>
+          )}
           <div className="stat-grid">
             <div>
               <span className="stat-icon teal">
                 <BookOpen size={19} />
               </span>
               <span>
-                <strong>
-                  {hasReview
-                    ? review.clauses.filter((clause) => clause.explanation)
-                        .length
-                    : "—"}
-                </strong>
+                <strong>{hasReview ? explained : "—"}</strong>
                 <small>Clauses explained</small>
               </span>
             </div>
@@ -786,11 +834,13 @@ export default function Workspace() {
                   />
                 </TabsContent>
                 <TabsContent value="compare">
-                  <Compare
-                    key={active}
-                    original={doc.text}
-                    isSample={review.mode === "sample"}
-                  />
+                  <Suspense fallback={<p role="status">Loading comparison…</p>}>
+                    <Compare
+                      key={active}
+                      original={doc.text}
+                      isSample={review.mode === "sample"}
+                    />
+                  </Suspense>
                 </TabsContent>
                 <TabsContent value="checklist">
                   <Checklist
@@ -819,20 +869,30 @@ export default function Workspace() {
           </footer>
         </main>
       </div>
-      <DocumentDialog
-        open={uploadOpen}
-        onOpenChange={setUploadOpen}
-        aiAvailable={aiAvailable}
-        onLoad={(newDoc) => {
-          setDocs((d) => [...d, newDoc]);
-          selectDocument(newDoc.id);
-          toast.success(
-            newDoc.review.mode === "ai"
-              ? "Your document review is ready."
-              : "Document opened in read-only mode.",
-          );
-        }}
-      />
+      {uploadOpen && (
+        <Suspense
+          fallback={
+            <p className="sr-only" role="status">
+              Loading document importer…
+            </p>
+          }
+        >
+          <DocumentDialog
+            open={uploadOpen}
+            onOpenChange={setUploadOpen}
+            aiAvailable={aiAvailable}
+            onLoad={(newDoc) => {
+              setDocs((d) => [...d, newDoc]);
+              selectDocument(newDoc.id);
+              toast.success(
+                newDoc.review.mode === "ai"
+                  ? "Your document review is ready."
+                  : "Document opened in read-only mode.",
+              );
+            }}
+          />
+        </Suspense>
+      )}
       <Dialog open={helpOpen} onOpenChange={setHelpOpen}>
         <DialogContent className="help-modal">
           <DialogHeader>
@@ -891,7 +951,21 @@ export default function Workspace() {
           </div>
         </DialogContent>
       </Dialog>
-      <ExportDialog doc={doc} open={exportOpen} onOpenChange={setExportOpen} />
+      {exportOpen && (
+        <Suspense
+          fallback={
+            <p className="sr-only" role="status">
+              Preparing export…
+            </p>
+          }
+        >
+          <ExportDialog
+            doc={doc}
+            open={exportOpen}
+            onOpenChange={setExportOpen}
+          />
+        </Suspense>
+      )}
       <Toaster theme="light" position="bottom-right" />
     </SidebarProvider>
   );
